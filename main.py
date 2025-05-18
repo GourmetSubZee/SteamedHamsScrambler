@@ -7,18 +7,42 @@ import random
 import PySide6.QtWidgets as QtWidgets
 from moviepy import *
 import whisper
+from rapidfuzz import fuzz, process
+import csv
 
+
+# Path to the video file
 steamed_hams = os.path.join(os.path.dirname(__file__), 'resources', 'SteamedHams.mp4')
 
+# Dialogue CSV file
+dialogue_csv = os.path.join(os.path.dirname(__file__), 'resources', 'dialogue.csv')
+
 def main():
+    # 1. Load dialogue lines
+    dialogue_lines = []
+    with open(dialogue_csv, newline='', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile, delimiter=';')
+        for row in reader:
+            dialogue_lines.append((row['Speaker'], row['Line']))
+    # 2. Prepare just the lines for matching
+    lines_only = [line for _, line in dialogue_lines]
+
     clip = VideoFileClip(steamed_hams)
 
-    #1. Extract audio and transcribe it
+    # Extract audio and transcribe it
     audio_path = tempfile.NamedTemporaryFile(suffix='.wav', delete=True).name
     clip.audio.write_audiofile(audio_path)
 
     model = whisper.load_model("base")
     result = model.transcribe(audio_path, word_timestamps=True)
+
+    # 3. For each Whisper segment, find the closest line and assign speaker
+    for segment in result['segments']:
+        text = segment['text'].strip()
+        match, score, idx = process.extractOne(text, lines_only, scorer=fuzz.token_sort_ratio)
+        speaker = dialogue_lines[idx][0]
+        segment['speaker'] = speaker
+        print(f"Segment: {text}\nSpeaker: {speaker} (Score: {score})\n")
 
     # Print the transcription
     # for segment in result['segments']:

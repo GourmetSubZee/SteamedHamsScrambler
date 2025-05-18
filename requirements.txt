@@ -1,4 +1,3 @@
 opencv-python~=4.11.0.86
 moviepy~=2.1.2
 python-vlc~=3.0.12117
-openai-whisper~=20230323
