@@ -9,6 +9,7 @@ from moviepy import VideoFileClip, TextClip, CompositeVideoClip, concatenate_vid
 import whisper
 from rapidfuzz import fuzz, process
 import csv
+import random
 
 steamed_hams = os.path.join(os.path.dirname(__file__), 'resources', 'SteamedHams.mp4')
 dialogue_file = os.path.join(os.path.dirname(__file__), 'resources', 'dialogue.csv')
@@ -41,22 +42,6 @@ def transcribe_audio(clip):
     os.remove(audio_path)
     return result
 
-def save_transcription(segments):
-    output_dir = os.path.join(os.path.dirname(__file__), 'output/transcriptions')
-    os.makedirs(output_dir, exist_ok=True)
-    output_path = create_incremental_filename(output_dir, "transcription", ".csv")
-
-    with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
-        fieldnames = ['start', 'end', 'text']
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        for segment in segments:
-            writer.writerow({
-                'start': segment['start'],
-                'end': segment['end'],
-                'text': segment['text']
-            })
-
 def assign_speakers_to_segments(segments, dialogue_lines):
     lines_only = [line for _, line in dialogue_lines]
     for segment in segments:
@@ -65,6 +50,37 @@ def assign_speakers_to_segments(segments, dialogue_lines):
         speaker = dialogue_lines[idx][0]
         segment['speaker'] = speaker
     return segments
+
+def save_transcription(segments):
+    output_dir = os.path.join(os.path.dirname(__file__), 'output/transcriptions')
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = create_incremental_filename(output_dir, "transcription", ".csv")
+
+    with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
+        fieldnames = ['start', 'end', 'speaker', 'text']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for segment in segments:
+            writer.writerow({
+                'start': segment['start'],
+                'end': segment['end'],
+                'speaker': segment['speaker'],
+                'text': segment['text']
+            })
+
+def shuffle_segments(segments, speaker):
+    # Find indices and collect segments for the target speaker
+    speaker_indices = [i for i, seg in enumerate(segments) if seg.get('speaker') == speaker]
+    speaker_segments = [segments[i] for i in speaker_indices]
+    # Shuffle the speaker's segments
+    random.shuffle(speaker_segments)
+    # Create a copy to avoid mutating the original list
+    shuffled = segments.copy()
+    # Replace the original speaker segments with shuffled ones
+    for idx, seg_idx in enumerate(speaker_indices):
+        shuffled[seg_idx] = speaker_segments[idx]
+    return shuffled
+
 
 def find_quiet_segments(segments, duration):
     quiet_segments = []
@@ -143,14 +159,15 @@ def main(transcription_csv=None, output_filename=None):
     dialogue_lines = load_dialogue_lines(dialogue_file)
     clip = VideoFileClip(steamed_hams)
     if transcription_csv:
-        segments = load_transcription_segments(transcription_csv)
+        speaking_segments = load_transcription_segments(transcription_csv)
     else:
         result = transcribe_audio(clip)
-        save_transcription(result['segments'])
         segments = result['segments']
-    speaking_segments = assign_speakers_to_segments(segments, dialogue_lines)
+        speaking_segments = assign_speakers_to_segments(segments, dialogue_lines)
+        save_transcription(speaking_segments)
     quiet_segments = find_quiet_segments(speaking_segments, clip.duration)
-    interleaved_segments = interleave_segments(speaking_segments, quiet_segments)
+    shuffled_skinner_segments = shuffle_segments(speaking_segments, 'SKINNER')
+    interleaved_segments = interleave_segments(shuffled_skinner_segments, quiet_segments)
     edited_clip = create_edited_clip(clip, interleaved_segments)
     output_path = save_video(edited_clip, output_filename=output_filename)
     play_video(output_path)
