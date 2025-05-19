@@ -1,3 +1,6 @@
+from modules.utils import clean_output, create_incremental_filename
+
+import argparse
 import os
 import tempfile
 import vlc
@@ -18,6 +21,18 @@ def load_dialogue_lines(dialogue_csv):
             dialogue_lines.append((row['Speaker'], row['Line']))
     return dialogue_lines
 
+def load_transcription_segments(csv_path):
+    segments = []
+    with open(csv_path, newline='', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            segments.append({
+                'start': float(row['start']),
+                'end': float(row['end']),
+                'text': row['text']
+            })
+    return segments
+
 def transcribe_audio(clip):
     audio_path = tempfile.NamedTemporaryFile(suffix='.wav', delete=False).name
     clip.audio.write_audiofile(audio_path)
@@ -25,6 +40,22 @@ def transcribe_audio(clip):
     result = model.transcribe(audio=audio_path, word_timestamps=True)
     os.remove(audio_path)
     return result
+
+def save_transcription(segments):
+    output_dir = os.path.join(os.path.dirname(__file__), 'output/transcriptions')
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = create_incremental_filename(output_dir, "transcription", ".csv")
+
+    with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
+        fieldnames = ['start', 'end', 'text']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for segment in segments:
+            writer.writerow({
+                'start': segment['start'],
+                'end': segment['end'],
+                'text': segment['text']
+            })
 
 def assign_speakers_to_segments(segments, dialogue_lines):
     lines_only = [line for _, line in dialogue_lines]
@@ -35,19 +66,18 @@ def assign_speakers_to_segments(segments, dialogue_lines):
         segment['speaker'] = speaker
     return segments
 
-def find_excluded_segments(segments, duration):
-    excluded_segments = []
+def find_quiet_segments(segments, duration):
+    quiet_segments = []
     for i in range(len(segments)):
         if i == 0:
-            excluded_segments.append((0, segments[i]['start']))
+            quiet_segments.append((0, segments[i]['start']))
         if i == len(segments) - 1:
-            excluded_segments.append((segments[i]['end'], duration))
+            quiet_segments.append((segments[i]['end'], duration))
         else:
-            excluded_segments.append((segments[i]['end'], segments[i + 1]['start']))
-    return excluded_segments
+            quiet_segments.append((segments[i]['end'], segments[i + 1]['start']))
+    return quiet_segments
 
 def interleave_segments(segments, excluded_segments):
-    #random.shuffle(segments)
     interleaved = []
     for i in range(len(excluded_segments)):
         interleaved.append(excluded_segments[i])
@@ -79,14 +109,17 @@ def create_edited_clip(clip, interleaved_segments):
             clips.append(composite)
     return concatenate_videoclips(clips)
 
-def save_video(edited_clip):
-    output_dir = os.path.join(os.path.dirname(__file__), 'output')
+def save_video(edited_clip, output_filename=None):
+    output_dir = os.path.join(os.path.dirname(__file__), 'output/videos')
     os.makedirs(output_dir, exist_ok=True)
-    # Create an incremental filename that appends the next number based on existing files starting with 001
-    existing_files = [f for f in os.listdir(output_dir) if f.startswith('edited_') and f.endswith('.mp4')]
-    existing_numbers = [int(f.split('_')[1].split('.')[0]) for f in existing_files]
-    next_number = max(existing_numbers, default=0) + 1
-    output_path = os.path.join(output_dir, f'edited_{next_number:03d}.mp4')
+    if output_filename:
+        # Strip extension if provided
+        if '.' in output_filename:
+            output_filename = output_filename.split('.')[0]
+        # Create incremental filename with mp4 extension
+        output_path = create_incremental_filename(output_dir, output_filename, ".mp4")
+    else:
+        output_path = create_incremental_filename(output_dir, "steamed_hams_edited", ".mp4")
     edited_clip.write_videofile(output_path, codec='libx264', audio_codec='aac')
     return output_path
 
@@ -106,17 +139,30 @@ def play_video(final_path):
     player.play()
     vlcapp.exec_()
 
-def main():
+def main(transcription_csv=None, output_filename=None):
     dialogue_lines = load_dialogue_lines(dialogue_file)
     clip = VideoFileClip(steamed_hams)
-    result = transcribe_audio(clip)
-    print("Transcription result keys:", result.keys())
-    segments = assign_speakers_to_segments(result['segments'], dialogue_lines)
-    excluded_segments = find_excluded_segments(segments, clip.duration)
-    interleaved = interleave_segments(segments, excluded_segments)
-    edited_clip = create_edited_clip(clip, interleaved)
-    output_path = save_video(edited_clip)
+    if transcription_csv:
+        segments = load_transcription_segments(transcription_csv)
+    else:
+        result = transcribe_audio(clip)
+        save_transcription(result['segments'])
+        segments = result['segments']
+    speaking_segments = assign_speakers_to_segments(segments, dialogue_lines)
+    quiet_segments = find_quiet_segments(speaking_segments, clip.duration)
+    interleaved_segments = interleave_segments(speaking_segments, quiet_segments)
+    edited_clip = create_edited_clip(clip, interleaved_segments)
+    output_path = save_video(edited_clip, output_filename=output_filename)
     play_video(output_path)
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('command', nargs='?', default=None)
+    parser.add_argument('--transcription', type=str, help='Path to transcription CSV')
+    parser.add_argument('--output', type=str, help='Output MP4 filename (optional)')
+    args = parser.parse_args()
+
+    if args.command == 'clean':
+        clean_output('output')
+    else:
+        main(transcription_csv=args.transcription, output_filename=args.output)
